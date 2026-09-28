@@ -1,5 +1,5 @@
 --==================================================
--- VD AUTO FARM v44 — HOP SERVER MAX 1 PLAYER
+-- VD AUTO FARM v43 — HOP SERVER PALING SEPI
 -- Executor: Delta
 --==================================================
 
@@ -26,15 +26,13 @@ local Config = {
     MaxServersToScan = 100,
     PlaceId          = game.PlaceId,
 
-    -- ★★★ HOP FILTER: MAX 1 PLAYER ★★★
-    HopMaxPlayers    = 1,       -- server max 1 player (selain kita)
-    -- playing 0 = KOSONG (prioritas utama)
-    -- playing 1 = ada 1 player lain
-    -- playing > 1 = SKIP (skip, tunggu)
+    -- ★★★ HOP: CARI SERVER PALING SEPI (tanpa max player)
+    -- Ga ada HopMinPlayers / HopMaxPlayers lagi.
+    -- Script otomatis pilih server dengan playing terkecil.
 
-    -- ★ RETRY
+    -- ★ RETRY unlimited
     HopRetryMax      = 999,
-    HopRetryDelay    = 2,       -- jeda antar scan ulang
+    HopRetryDelay    = 1.5,
     HopTimeoutCheck  = 8,
 
     MatchCheckDelay  = 0.5,
@@ -147,7 +145,7 @@ local function initNotif()
         NotifGui.Parent = PlayerGui
     end
 
-    print("[VD v44] Notif GUI parent:", NotifGui.Parent and NotifGui.Parent:GetFullName() or "nil")
+    print("[VD v43] Notif GUI parent:", NotifGui.Parent and NotifGui.Parent:GetFullName() or "nil")
 
     NotifContainer = Instance.new("Frame")
     NotifContainer.Name = "Container"
@@ -166,7 +164,7 @@ initNotif()
 
 local function notify(title, text, dur)
     dur = dur or 4
-    print("[VD v44] " .. title .. " | " .. text)
+    print("[VD v43] " .. title .. " | " .. text)
 
     if not NotifGui or not NotifGui.Parent then
         pcall(initNotif)
@@ -324,7 +322,7 @@ local function CreateUI()
     title.Size = UDim2.new(1, -20, 0, 28)
     title.Position = UDim2.fromOffset(10, 4)
     title.BackgroundTransparency = 1
-    title.Text = "🔪 VD v44 — Max 1 Player"
+    title.Text = "🔪 VD v43 — Server Paling Sepi"
     title.TextColor3 = Color3.new(1, 1, 1)
     title.TextSize = 10
     title.Font = Enum.Font.GothamBold
@@ -669,7 +667,7 @@ local function FindFinishLine()
                or lower == "finish line"
                or lower == "finish"
             then
-                print("[VD v44] ★★★ KETEMU FINISHLINE:", obj:GetFullName())
+                print("[VD v43] ★★★ KETEMU FINISHLINE:", obj:GetFullName())
                 return obj
             end
         end
@@ -683,7 +681,7 @@ local function FindFinishLine()
                 if lower:find("end", 1, true)
                    or lower:find("finish", 1, true)
                 then
-                    print("[VD v44] ★ Prioritas 2: Gate end -", child.Name)
+                    print("[VD v43] ★ Prioritas 2: Gate end -", child.Name)
                     return child
                 end
             end
@@ -706,7 +704,7 @@ local function FireLeverEvent()
     if exitFolder then
         local leverEvent = exitFolder:FindFirstChild("LeverEvent")
         if leverEvent and leverEvent:IsA("RemoteEvent") then
-            print("[VD v44] 🔥 Fire Exit.LeverEvent")
+            print("[VD v43] 🔥 Fire Exit.LeverEvent")
             pcall(function() leverEvent:FireServer() end)
             return true
         end
@@ -718,7 +716,7 @@ local function FireLeverEvent()
         if gateFolder then
             local gateEvent = gateFolder:FindFirstChild("gate")
             if gateEvent and gateEvent:IsA("RemoteEvent") then
-                print("[VD v44] 🔥 Fire Items.Gate.gate")
+                print("[VD v43] 🔥 Fire Items.Gate.gate")
                 pcall(function() gateEvent:FireServer() end)
                 return true
             end
@@ -782,7 +780,7 @@ local function TryEscape()
         EscStart = now
         EscBeganAt = now
         StartPos = GetCharPos()
-        print("[VD v44] START escape...")
+        print("[VD v43] START escape...")
     end
 
     if (now - EscStart) > Config.EscapeTimeout then
@@ -792,7 +790,7 @@ local function TryEscape()
     end
 
     if IsEscaped() then
-        print("[VD v44] ✔ ESCAPED DETECTED!")
+        print("[VD v43] ✔ ESCAPED DETECTED!")
         EscDone = true
         JustEscaped = true
         EscDoneAt = now
@@ -843,7 +841,7 @@ local function TryEscape()
                 JustEscaped = true
                 EscDoneAt = os.clock()
                 StopNoclip()
-                print("[VD v44] ✔✔✔ ESCAPED via FinishLine!")
+                print("[VD v43] ✔✔✔ ESCAPED via FinishLine!")
                 return true
             end
         end
@@ -885,60 +883,55 @@ local function GetServers()
 end
 
 --==================================================
--- ★★★ PICK SERVER — MAX 1 PLAYER, SISANYA SKIP ★★★
+-- ★★★ PICK SERVER — PALING SEPI (TANPA MAX) ★★★
 --==================================================
--- Aturan:
---   - playing 0 = KOSONG → prioritas utama ✅
---   - playing 1 = 1 player → boleh ✅
---   - playing > 1 = SKIP ❌ (tunggu)
+-- Urutan: playing paling kecil → paling besar
+-- Server KOSONG (0p) = prioritas utama
+-- Ga ada batasan max player
 --==================================================
 
 local function PickServer(servers, excludeIds)
     excludeIds = excludeIds or {}
 
     if not servers or #servers == 0 then
-        return nil, "no servers", 0, 0
+        return nil, "no servers", 0
     end
 
-    -- Kumpulkan kandidat yang LOLOS FILTER
+    -- Kumpulkan semua kandidat valid (belum dicoba + masih ada slot)
     local candidates = {}
-    local skippedCount = 0
     for _, s in ipairs(servers) do
         if s.id ~= game.JobId
            and not excludeIds[s.id]
            and s.playing < s.maxPlayers
         then
-            -- ★ FILTER: max 1 player
-            if s.playing <= Config.HopMaxPlayers then
-                table.insert(candidates, s)
-            else
-                skippedCount = skippedCount + 1
-            end
+            table.insert(candidates, s)
         end
     end
 
     if #candidates == 0 then
-        return nil, "ga ada server max " .. Config.HopMaxPlayers .. " player", 0, skippedCount
+        return nil, "semua server udah dicoba", 0
     end
 
     -- ★ SORT: PALING SEPI DULU (playing terkecil)
     table.sort(candidates, function(a, b)
         if a.playing ~= b.playing then
-            return a.playing < b.playing
+            return a.playing < b.playing   -- playing terkecil = paling sepi
         end
+        -- Kalau sama, prioritas yang slot kosong lebih banyak
         return (a.maxPlayers - a.playing) > (b.maxPlayers - b.playing)
     end)
 
     local pick = candidates[1]
 
+    -- Info mode
     local mode
     if pick.playing == 0 then
         mode = "KOSONG (0p)"
     else
-        mode = "1p"
+        mode = "sepi (" .. pick.playing .. "p)"
     end
 
-    return pick, mode, #candidates, skippedCount
+    return pick, mode, #candidates
 end
 
 --==================================================
@@ -953,13 +946,18 @@ ScheduleHopRetry = function(reason)
     Hopping = false
 
     if HopRetryCount >= Config.HopRetryMax then
-        print("[VD v44] ❌ Retry habis — reset & ulang")
+        print("[VD v43] ❌ Retry habis — reset & ulang dari awal")
         HopRetryCount = 0
         TriedServers = {}
+        task.delay(3, function()
+            HopToServer(reason, true)
+        end)
+        return
     end
 
     HopRetryCount = HopRetryCount + 1
-    print("[VD v44] ⚠️ Retry hop #" .. HopRetryCount)
+    notify("VD AUTO HOP", "⚠️ Server penuh, retry #" .. HopRetryCount, 2)
+    print("[VD v43] ⚠️ Retry hop #" .. HopRetryCount)
 
     task.delay(Config.HopRetryDelay, function()
         HopToServer(reason, true)
@@ -977,50 +975,32 @@ HopToServer = function(reason, isRetry)
 
     Hopping = true
     HopInProgress = true
-    HopReason = reason or "cari server 0-1p"
+    HopReason = reason or "cari server sepi"
 
     UI.status.Text = "Status: Hoping..." .. (isRetry and (" [R" .. HopRetryCount .. "]") or "")
     UI.status.TextColor3 = Color3.fromRGB(255, 200, 80)
+
+    notify("VD AUTO HOP", "🚀 Hop → " .. HopReason
+        .. (isRetry and (" [R" .. HopRetryCount .. "]") or ""), 2)
+    print("[VD v43] HOP: " .. HopReason
+        .. (isRetry and (" (retry #" .. HopRetryCount .. ")") or ""))
 
     StopNoclip()
 
     local servers = GetServers()
 
-    -- Pick dengan filter max 1 player
-    local target, mode, count, skipped = PickServer(servers, TriedServers)
+    -- Cari target
+    local target, mode, count = PickServer(servers, TriedServers)
 
-    -- ★ Kalau semua server 0-1p udah dicoba → reset TriedServers
+    -- Kalau semua udah dicoba → reset & cari ulang
     if not target then
-        if count == 0 and (skipped or 0) > 0 then
-            print(string.format(
-                "[VD v44] ⏳ Ga ada server ≤%dp (skip %d server rame) — tunggu %ds",
-                Config.HopMaxPlayers, skipped, Config.HopRetryDelay))
-
-            UI.status.Text = "Status: Tunggu server ≤1p"
-            UI.status.TextColor3 = Color3.fromRGB(255, 180, 80)
-            UI.info4.Text = "Skip " .. skipped .. " server rame"
-
-            Hopping = false
-            HopInProgress = false
-
-            notify("VD AUTO HOP",
-                "⏳ Ga ada server ≤1p, tunggu " .. Config.HopRetryDelay .. "s", 2)
-
-            task.delay(Config.HopRetryDelay, function()
-                HopToServer(reason, true)
-            end)
-            return
-        else
-            -- Semua kandidat udah dicoba → reset
-            print("[VD v44] ⚠️ " .. tostring(mode) .. " — reset daftar")
-            TriedServers = {}
-            task.wait(1)
-            local rTarget, rMode, rCount = PickServer(servers, TriedServers)
-            if rTarget then
-                target = rTarget
-                mode = rMode
-                count = rCount
-            end
+        print("[VD v43] ⚠️ " .. tostring(mode) .. " — reset daftar")
+        TriedServers = {}
+        task.wait(2)
+        local retryTarget, retryMode = PickServer(servers, TriedServers)
+        if retryTarget then
+            target = retryTarget
+            mode = retryMode
         end
     end
 
@@ -1036,8 +1016,8 @@ HopToServer = function(reason, isRetry)
     if target then
         TriedServers[target.id] = true
 
-        print(string.format("[VD v44] 🎯 Target: %d/%d [%s] | %d kandidat | skip %d",
-            target.playing, target.maxPlayers, mode, count or 0, skipped or 0))
+        print(string.format("[VD v43] 🎯 Target: %d/%d [%s] | %d kandidat",
+            target.playing, target.maxPlayers, mode, count or 0))
         UI.info4.Text = "Hop: " .. target.playing .. "/" .. target.maxPlayers
 
         Hopping = false
@@ -1048,20 +1028,19 @@ HopToServer = function(reason, isRetry)
         end)
 
         if not ok then
-            print("[VD v44] ⚠️ Teleport error: " .. tostring(err))
+            print("[VD v43] ⚠️ Teleport error: " .. tostring(err))
             task.spawn(function() ScheduleHopRetry(HopReason) end)
             return
         end
 
         task.delay(Config.HopTimeoutCheck, function()
             if HopInProgress then
-                print("[VD v44] ⏱️ Timeout, retry")
+                print("[VD v43] ⏱️ Timeout, retry")
                 ScheduleHopRetry(HopReason)
             end
         end)
     else
-        -- Fallback: beneran ga ada server (API error / roblox down)
-        print("[VD v44] ❌ Server list kosong → tunggu 5s")
+        print("[VD v43] ❌ Server list kosong → tunggu 5s retry")
         Hopping = false
         HopInProgress = false
         task.delay(5, function()
@@ -1076,7 +1055,7 @@ end
 
 TeleportService.TeleportInitFailed:Connect(function(player, result, errMsg, placeId, options)
     if player ~= LocalPlayer then return end
-    print("[VD v44] ⚠️ TeleportInitFailed:", tostring(result), "|", tostring(errMsg))
+    print("[VD v43] ⚠️ TeleportInitFailed:", tostring(result), "|", tostring(errMsg))
     if not HopInProgress then return end
     task.spawn(function()
         ScheduleHopRetry(HopReason)
@@ -1091,7 +1070,7 @@ task.spawn(function()
     while true do
         task.wait(1)
         if game.JobId ~= LastJobId then
-            print("[VD v44] ✅ SUKSES pindah server: "
+            print("[VD v43] ✅ SUKSES pindah server: "
                 .. tostring(LastJobId):sub(1, 8) .. " → "
                 .. tostring(game.JobId):sub(1, 8))
 
@@ -1102,7 +1081,7 @@ task.spawn(function()
 
             task.wait(3)
             local myCount = #Players:GetPlayers()
-            print("[VD v44] 📊 Server baru punya " .. myCount .. " player")
+            print("[VD v43] 📊 Server baru punya " .. myCount .. " player")
         end
     end
 end)
@@ -1133,7 +1112,7 @@ task.spawn(function()
 
         if rawZone == "Map" and not WasInMap then
             WasInMap = true
-            print("[VD v44] Masuk MAP")
+            print("[VD v43] Masuk MAP")
         end
         LastRawZone = rawZone
         ZoneChangedAt = now
@@ -1155,13 +1134,13 @@ task.spawn(function()
         UI.info3.Text = "Escape: " .. escInfo
         UI.info5.Text = "Hop: " .. (Hopping and ("R" .. HopRetryCount) or "idle")
 
-        -- HOP TRIGGER
+        -- HOP TRIGGER — setelah escape
         if JustEscaped and Config.AutoHop and not Hopping then
             if not LobbyArrivedAt then
                 LobbyArrivedAt = now
                 notify("VD AUTO HOP",
                     "🏆 ESCAPE SUKSES — hop dalam " .. Config.PostWinDelay .. "s", 3)
-                print("[VD v44] 🏆 Escape sukses → hop")
+                print("[VD v43] 🏆 Escape sukses → hop")
             end
 
             local sisa = Config.PostWinDelay - (now - LobbyArrivedAt)
@@ -1203,7 +1182,7 @@ task.spawn(function()
             if not KillerNotified then
                 KillerNotified = true
                 notify("VD AUTO HOP", "🔪 KILLER MODE → hop", 4)
-                print("[VD v44] KILLER MODE → HOP")
+                print("[VD v43] KILLER MODE → HOP")
             end
             UI.status.Text = "Status: KILLER → HOP"
             UI.status.TextColor3 = Color3.fromRGB(255, 100, 100)
@@ -1229,7 +1208,7 @@ task.spawn(function()
                 if not EscNotified then
                     EscNotified = true
                     notify("VD AUTO ESCAPE", "✅ ESCAPE BERHASIL! Hop...", 3)
-                    print("[VD v44] ESCAPE DONE")
+                    print("[VD v43] ESCAPE DONE")
                 end
                 UI.status.Text = "Status: ESCAPED"
                 UI.status.TextColor3 = Color3.fromRGB(80, 255, 120)
@@ -1243,9 +1222,9 @@ task.spawn(function()
 end)
 
 print("═══════════════════════════════════════════")
-print("[VD v44] LOADED — HOP SERVER MAX 1 PLAYER")
-print("[VD] ★ Filter: server playing ≤ " .. Config.HopMaxPlayers)
-print("[VD] ★ Server >1 player = SKIP")
-print("[VD] ★ Prioritas: 0 player (kosong) → 1 player")
-print("[VD] ★ Kalau ga ada → tunggu, retry")
+print("[VD v43] LOADED — HOP SERVER PALING SEPI")
+print("[VD] ★ Prioritas: server dengan playing TERKECIL")
+print("[VD] ★ Server KOSONG (0p) = paling prioritas")
+print("[VD] ★ Ga ada batas max player")
+print("[VD] ★ Retry unlimited sampai dapat")
 print("═══════════════════════════════════════════")
