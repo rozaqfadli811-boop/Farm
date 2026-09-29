@@ -1,5 +1,5 @@
 --==================================================
--- VD AUTO FARM v43 — HOP SERVER PALING SEPI + AUTO RECONNECT + ANTI-AFK
+-- VD AUTO FARM v44 — HOP KE SERVER BARU (FIX)
 -- Executor: Delta
 --==================================================
 
@@ -17,7 +17,7 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
 --==================================================
--- ★★★ AUTO RECONNECT + ANTI-AFK (UPGRADED) ★★★
+-- ★★★ AUTO RECONNECT + ANTI-AFK ★★★
 --==================================================
 
 local AutoReconnect = {
@@ -28,7 +28,6 @@ local AutoReconnect = {
     Attempts        = 0,
 }
 
--- ★ ANTI-AFK — Prevent kick karena idle
 task.spawn(function()
     if not LocalPlayer then return end
     LocalPlayer.Idled:Connect(function()
@@ -82,7 +81,6 @@ local function FindReconnectButton()
 
     for _, root in ipairs(roots) do
         if not root then continue end
-
         local promptGui = root:FindFirstChild("RobloxPromptGui")
         if promptGui then
             local overlay = promptGui:FindFirstChild("promptOverlay")
@@ -100,7 +98,6 @@ local function FindReconnectButton()
                 end
             end
         end
-
         for _, obj in ipairs(root:GetDescendants()) do
             if obj:IsA("TextButton") or obj:IsA("ImageButton") then
                 local n = obj.Name or ""
@@ -118,13 +115,11 @@ end
 
 local function TryClickReconnect(btn)
     if not btn then return false end
-
     if type(firesignal) == "function" then
         pcall(function() firesignal(btn.MouseButton1Click) end)
         pcall(function() firesignal(btn.MouseButton1Down) end)
         pcall(function() firesignal(btn.Activated) end)
     end
-
     if type(getconnections) == "function" then
         pcall(function()
             for _, conn in ipairs(getconnections(btn.MouseButton1Click)) do
@@ -138,17 +133,14 @@ local function TryClickReconnect(btn)
             end
         end)
     end
-
     pcall(function() btn:Activate() end)
     pcall(function() btn:InputHoldBegin() task.wait(0.05) btn:InputHoldEnd() end)
-
     return true
 end
 
 local function TryTeleportReconnect()
     pcall(function()
-        TeleportService:TeleportToPlaceInstance(
-            game.PlaceId, game.JobId, LocalPlayer)
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
     end)
 end
 
@@ -156,24 +148,17 @@ task.spawn(function()
     local lastAttempt = 0
     while AutoReconnect.Enabled do
         task.wait(AutoReconnect.CheckInterval)
-
         if AutoReconnect.Attempts >= AutoReconnect.MaxAttempts then
-            print("[VD Reconnect] ❌ Max attempt reached, stop")
             AutoReconnect.Enabled = false
             break
         end
-
         local now = os.clock()
-        if now - lastAttempt < AutoReconnect.AttemptDelay then
-            continue
-        end
-
+        if now - lastAttempt < AutoReconnect.AttemptDelay then continue end
         local btn = FindReconnectButton()
         if btn and btn.Visible then
             AutoReconnect.Attempts = AutoReconnect.Attempts + 1
             lastAttempt = now
-            print("[VD Reconnect] 🔄 Attempt #" .. AutoReconnect.Attempts
-                .. " — clicking " .. tostring(btn.Text or btn.Name) .. "...")
+            print("[VD Reconnect] 🔄 Attempt #" .. AutoReconnect.Attempts)
             TryClickReconnect(btn)
         end
     end
@@ -184,7 +169,6 @@ task.spawn(function()
         task.wait(3)
         if LocalPlayer.Character and LocalPlayer.Character.Parent then
             if AutoReconnect.Attempts > 0 then
-                print("[VD Reconnect] ✅ Koneksi OK — reset counter")
                 AutoReconnect.Attempts = 0
             end
         end
@@ -199,7 +183,6 @@ task.spawn(function()
             lastCharTime = os.clock()
         else
             if (os.clock() - lastCharTime) > 30 then
-                print("[VD Reconnect] ⏱️ 30s no char, fallback teleport...")
                 TryTeleportReconnect()
                 lastCharTime = os.clock()
             end
@@ -219,9 +202,14 @@ local Config = {
     MaxServersToScan = 100,
     PlaceId          = game.PlaceId,
 
+    -- ★★★ HOP: pindah ke SERVER BARU
     HopRetryMax      = 999,
     HopRetryDelay    = 1.5,
     HopTimeoutCheck  = 8,
+
+    -- ★★★ BARU: JANGAN balik ke server yang pernah dikunjungi
+    VisitedMemorySize = 30,      -- ingat 30 server terakhir
+    MinHopInterval    = 15,      -- jeda minimal antar hop (detik)
 
     MatchCheckDelay  = 0.5,
     MapDistThreshold = 3000,
@@ -278,8 +266,16 @@ local KillerNotified   = false
 local HopReason        = nil
 local HopInProgress    = false
 local HopRetryCount    = 0
-local TriedServers     = {}
+local TriedServers     = {}       -- server yang udah dicoba di iterasi ini
 local LastJobId        = game.JobId
+
+-- ★★★ BARU: Visited Jobs (yang udah pernah dikunjungi)
+local VisitedJobs      = {}       -- [JobId] = timestamp
+local VisitedList      = {}       -- array untuk track urutan
+
+-- ★★★ BARU: catat JobId saat start
+VisitedJobs[game.JobId] = os.time()
+table.insert(VisitedList, game.JobId)
 
 --==================================================
 -- CUSTOM NOTIF GUI
@@ -332,8 +328,6 @@ local function initNotif()
         NotifGui.Parent = PlayerGui
     end
 
-    print("[VD v43] Notif GUI parent:", NotifGui.Parent and NotifGui.Parent:GetFullName() or "nil")
-
     NotifContainer = Instance.new("Frame")
     NotifContainer.Name = "Container"
     NotifContainer.Size = UDim2.new(0, 340, 0, 500)
@@ -351,14 +345,10 @@ initNotif()
 
 local function notify(title, text, dur)
     dur = dur or 4
-    print("[VD v43] " .. title .. " | " .. text)
+    print("[VD v44] " .. title .. " | " .. text)
 
-    if not NotifGui or not NotifGui.Parent then
-        pcall(initNotif)
-    end
-    if not NotifContainer or not NotifContainer.Parent then
-        pcall(initNotif)
-    end
+    if not NotifGui or not NotifGui.Parent then pcall(initNotif) end
+    if not NotifContainer or not NotifContainer.Parent then pcall(initNotif) end
     if not NotifContainer then return end
 
     local existing = {}
@@ -405,21 +395,17 @@ local function notify(title, text, dur)
 
     frame.Position = UDim2.fromOffset(400, 0)
     task.spawn(function()
-        local tw = TweenService:Create(
-            frame,
+        local tw = TweenService:Create(frame,
             TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            { Position = UDim2.fromOffset(0, 0) }
-        )
+            { Position = UDim2.fromOffset(0, 0) })
         tw:Play()
     end)
 
     task.delay(dur, function()
         if frame and frame.Parent then
-            local tw2 = TweenService:Create(
-                frame,
+            local tw2 = TweenService:Create(frame,
                 TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-                { Position = UDim2.fromOffset(400, 0), BackgroundTransparency = 1 }
-            )
+                { Position = UDim2.fromOffset(400, 0), BackgroundTransparency = 1 })
             tw2:Play()
             task.wait(0.35)
             if frame and frame.Parent then frame:Destroy() end
@@ -445,7 +431,6 @@ local function StartNoclip(duration)
     NoclipActive = true
     NoclipUntil = os.clock() + (duration or Config.NoclipWalkTime)
     if NoclipConn then NoclipConn:Disconnect() end
-
     NoclipConn = RunService.Stepped:Connect(function()
         if not NoclipActive then return end
         if os.clock() > NoclipUntil then
@@ -509,7 +494,7 @@ local function CreateUI()
     title.Size = UDim2.new(1, -20, 0, 28)
     title.Position = UDim2.fromOffset(10, 4)
     title.BackgroundTransparency = 1
-    title.Text = "🔪 VD v43 — Server Paling Sepi"
+    title.Text = "🔪 VD v44 — Server Baru"
     title.TextColor3 = Color3.new(1, 1, 1)
     title.TextSize = 10
     title.Font = Enum.Font.GothamBold
@@ -811,12 +796,10 @@ local function FindExitDoor()
     scanFolder(ws, 3)
 
     if #candidates == 0 then return nil end
-
     table.sort(candidates, function(a, b)
         if a.priority ~= b.priority then return a.priority < b.priority end
         return a.nameLen < b.nameLen
     end)
-
     return candidates[1].obj
 end
 
@@ -854,7 +837,6 @@ local function FindFinishLine()
                or lower == "finish line"
                or lower == "finish"
             then
-                print("[VD v43] ★★★ KETEMU FINISHLINE:", obj:GetFullName())
                 return obj
             end
         end
@@ -865,16 +847,12 @@ local function FindFinishLine()
         for _, child in ipairs(gateFolder:GetChildren()) do
             if child:IsA("BasePart") then
                 local lower = child.Name:lower()
-                if lower:find("end", 1, true)
-                   or lower:find("finish", 1, true)
-                then
-                    print("[VD v43] ★ Prioritas 2: Gate end -", child.Name)
+                if lower:find("end", 1, true) or lower:find("finish", 1, true) then
                     return child
                 end
             end
         end
     end
-
     return nil
 end
 
@@ -891,7 +869,6 @@ local function FireLeverEvent()
     if exitFolder then
         local leverEvent = exitFolder:FindFirstChild("LeverEvent")
         if leverEvent and leverEvent:IsA("RemoteEvent") then
-            print("[VD v43] 🔥 Fire Exit.LeverEvent")
             pcall(function() leverEvent:FireServer() end)
             return true
         end
@@ -903,13 +880,11 @@ local function FireLeverEvent()
         if gateFolder then
             local gateEvent = gateFolder:FindFirstChild("gate")
             if gateEvent and gateEvent:IsA("RemoteEvent") then
-                print("[VD v43] 🔥 Fire Items.Gate.gate")
                 pcall(function() gateEvent:FireServer() end)
                 return true
             end
         end
     end
-
     return false
 end
 
@@ -920,13 +895,11 @@ end
 local function IsEscaped()
     local char = LocalPlayer.Character
     if not char then return false end
-
     if LocalPlayer:GetAttribute("Escaped") == true then return true end
     if LocalPlayer:GetAttribute("HasEscaped") == true then return true end
     if char:GetAttribute("Escaped") == true then return true end
     if CollectionService:HasTag(LocalPlayer, "Escaped") then return true end
     if CollectionService:HasTag(char, "Escaped") then return true end
-
     if StableZone == "Lobby" then return true end
 
     local myPos = GetCharPos()
@@ -949,7 +922,6 @@ local function IsEscaped()
             if CountKillers() == 0 then return true end
         end
     end
-
     return false
 end
 
@@ -962,12 +934,10 @@ local function TryEscape()
     if EscDone then return true end
 
     local now = os.clock()
-
     if not EscStart then
         EscStart = now
         EscBeganAt = now
         StartPos = GetCharPos()
-        print("[VD v43] START escape...")
     end
 
     if (now - EscStart) > Config.EscapeTimeout then
@@ -977,7 +947,6 @@ local function TryEscape()
     end
 
     if IsEscaped() then
-        print("[VD v43] ✔ ESCAPED DETECTED!")
         EscDone = true
         JustEscaped = true
         EscDoneAt = now
@@ -993,10 +962,7 @@ local function TryEscape()
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
 
-    if Config.AutoNoclip then
-        StartNoclip(Config.NoclipWalkTime + 8)
-    end
-
+    if Config.AutoNoclip then StartNoclip(Config.NoclipWalkTime + 8) end
     if Config.FireLeverFirst and EscAttempt <= 2 then
         FireLeverEvent()
         task.wait(Config.LeverWaitTime)
@@ -1005,7 +971,6 @@ local function TryEscape()
     local finishLine = FindFinishLine()
     if finishLine then
         UI.info5.Text = "TP: " .. finishLine.Name
-
         for i = 1, 5 do
             hrp.CFrame = CFrame.new(
                 finishLine.Position.X,
@@ -1015,20 +980,17 @@ local function TryEscape()
             hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             pcall(function() hrp.Velocity = Vector3.new(0, 0, 0) end)
             task.wait(0.2)
-
             hrp.CFrame = CFrame.new(
                 finishLine.Position.X + math.random(-3, 3),
                 finishLine.Position.Y + 3,
                 finishLine.Position.Z + math.random(-3, 3)
             )
             task.wait(0.15)
-
             if IsEscaped() then
                 EscDone = true
                 JustEscaped = true
                 EscDoneAt = os.clock()
                 StopNoclip()
-                print("[VD v43] ✔✔✔ ESCAPED via FinishLine!")
                 return true
             end
         end
@@ -1059,19 +1021,46 @@ end
 --==================================================
 
 local function GetServers()
-    local url = string.format(
-        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=%d",
-        Config.PlaceId, Config.MaxServersToScan)
-    local ok, data = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(url))
-    end)
-    if ok and data and data.data then return data.data end
-    return {}
+    -- ★★★ BARU: 2 endpoint biar dapet server lebih banyak
+    local endpoints = {
+        string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=%d", Config.PlaceId, Config.MaxServersToScan),
+        string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=%d", Config.PlaceId, Config.MaxServersToScan),
+    }
+
+    local allServers = {}
+    local seen = {}
+    for _, url in ipairs(endpoints) do
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet(url))
+        end)
+        if ok and data and data.data then
+            for _, s in ipairs(data.data) do
+                if not seen[s.id] then
+                    seen[s.id] = true
+                    table.insert(allServers, s)
+                end
+            end
+        end
+    end
+    return allServers
 end
 
 --==================================================
--- PICK SERVER — PALING SEPI (TANPA MAX)
+-- ★★★ PICK SERVER — PRIORITAS SERVER BARU ★★★
 --==================================================
+
+local function IsRecentlyVisited(jobId)
+    if not VisitedJobs[jobId] then return false end
+    return true
+end
+
+local function CleanVisitedMemory()
+    -- Batasi ukuran VisitedJobs
+    while #VisitedList > Config.VisitedMemorySize do
+        local oldest = table.remove(VisitedList, 1)
+        VisitedJobs[oldest] = nil
+    end
+end
 
 local function PickServer(servers, excludeIds)
     excludeIds = excludeIds or {}
@@ -1080,20 +1069,39 @@ local function PickServer(servers, excludeIds)
         return nil, "no servers", 0
     end
 
-    local candidates = {}
+    -- ★★★ Filter: skip server yang udah pernah dikunjungi + skip excludeIds
+    local fresh = {}
     for _, s in ipairs(servers) do
         if s.id ~= game.JobId
            and not excludeIds[s.id]
+           and not IsRecentlyVisited(s.id)
            and s.playing < s.maxPlayers
         then
-            table.insert(candidates, s)
+            table.insert(fresh, s)
         end
+    end
+
+    -- ★ Kalau ga ada server baru → fallback ke server apapun yg belum dicoba
+    local candidates = fresh
+    local fromVisited = false
+    if #candidates == 0 then
+        fromVisited = true
+        for _, s in ipairs(servers) do
+            if s.id ~= game.JobId
+               and not excludeIds[s.id]
+               and s.playing < s.maxPlayers
+            then
+                table.insert(candidates, s)
+            end
+        end
+        print("[VD v44] ⚠️ Server baru habis, pakai server yg belum dicoba")
     end
 
     if #candidates == 0 then
         return nil, "semua server udah dicoba", 0
     end
 
+    -- Sort: paling sepi dulu
     table.sort(candidates, function(a, b)
         if a.playing ~= b.playing then
             return a.playing < b.playing
@@ -1101,13 +1109,20 @@ local function PickServer(servers, excludeIds)
         return (a.maxPlayers - a.playing) > (b.maxPlayers - b.playing)
     end)
 
-    local pick = candidates[1]
+    -- ★ Random dari top 5 biar ga selalu server #1 yang sama
+    local pickCount = math.min(5, #candidates)
+    local pickIdx = math.random(1, pickCount)
+    local pick = candidates[pickIdx]
 
     local mode
     if pick.playing == 0 then
         mode = "KOSONG (0p)"
     else
         mode = "sepi (" .. pick.playing .. "p)"
+    end
+
+    if fromVisited then
+        mode = mode .. " [fallback]"
     end
 
     return pick, mode, #candidates
@@ -1125,18 +1140,14 @@ ScheduleHopRetry = function(reason)
     Hopping = false
 
     if HopRetryCount >= Config.HopRetryMax then
-        print("[VD v43] ❌ Retry habis — reset & ulang dari awal")
         HopRetryCount = 0
         TriedServers = {}
-        task.delay(3, function()
-            HopToServer(reason, true)
-        end)
+        task.delay(3, function() HopToServer(reason, true) end)
         return
     end
 
     HopRetryCount = HopRetryCount + 1
     notify("VD AUTO HOP", "⚠️ Server penuh, retry #" .. HopRetryCount, 2)
-    print("[VD v43] ⚠️ Retry hop #" .. HopRetryCount)
 
     task.delay(Config.HopRetryDelay, function()
         HopToServer(reason, true)
@@ -1147,6 +1158,12 @@ HopToServer = function(reason, isRetry)
     if Hopping then return end
     if not Config.AutoHop then return end
 
+    -- ★ Cek interval minimal
+    local now = os.clock()
+    if not isRetry and (now - LastHop) < Config.MinHopInterval then
+        return
+    end
+
     if not isRetry then
         HopRetryCount = 0
         TriedServers = {}
@@ -1154,24 +1171,21 @@ HopToServer = function(reason, isRetry)
 
     Hopping = true
     HopInProgress = true
-    HopReason = reason or "cari server sepi"
+    HopReason = reason or "cari server baru"
 
     UI.status.Text = "Status: Hoping..." .. (isRetry and (" [R" .. HopRetryCount .. "]") or "")
     UI.status.TextColor3 = Color3.fromRGB(255, 200, 80)
 
-    notify("VD AUTO HOP", "🚀 Hop → " .. HopReason
-        .. (isRetry and (" [R" .. HopRetryCount .. "]") or ""), 2)
-    print("[VD v43] HOP: " .. HopReason
-        .. (isRetry and (" (retry #" .. HopRetryCount .. ")") or ""))
+    notify("VD AUTO HOP", "🚀 Hop → " .. HopReason, 2)
+    print("[VD v44] HOP: " .. HopReason)
 
     StopNoclip()
 
     local servers = GetServers()
-
     local target, mode, count = PickServer(servers, TriedServers)
 
     if not target then
-        print("[VD v43] ⚠️ " .. tostring(mode) .. " — reset daftar")
+        print("[VD v44] ⚠️ " .. tostring(mode) .. " — reset daftar")
         TriedServers = {}
         task.wait(2)
         local retryTarget, retryMode = PickServer(servers, TriedServers)
@@ -1193,8 +1207,8 @@ HopToServer = function(reason, isRetry)
     if target then
         TriedServers[target.id] = true
 
-        print(string.format("[VD v43] 🎯 Target: %d/%d [%s] | %d kandidat",
-            target.playing, target.maxPlayers, mode, count or 0))
+        print(string.format("[VD v44] 🎯 Target: %d/%d [%s] | JobId: %s",
+            target.playing, target.maxPlayers, mode, target.id:sub(1, 8)))
         UI.info4.Text = "Hop: " .. target.playing .. "/" .. target.maxPlayers
 
         Hopping = false
@@ -1205,24 +1219,22 @@ HopToServer = function(reason, isRetry)
         end)
 
         if not ok then
-            print("[VD v43] ⚠️ Teleport error: " .. tostring(err))
+            print("[VD v44] ⚠️ Teleport error: " .. tostring(err))
             task.spawn(function() ScheduleHopRetry(HopReason) end)
             return
         end
 
         task.delay(Config.HopTimeoutCheck, function()
             if HopInProgress then
-                print("[VD v43] ⏱️ Timeout, retry")
+                print("[VD v44] ⏱️ Timeout, retry")
                 ScheduleHopRetry(HopReason)
             end
         end)
     else
-        print("[VD v43] ❌ Server list kosong → tunggu 5s retry")
+        print("[VD v44] ❌ Server list kosong → tunggu 5s retry")
         Hopping = false
         HopInProgress = false
-        task.delay(5, function()
-            HopToServer(reason, true)
-        end)
+        task.delay(5, function() HopToServer(reason, true) end)
     end
 end
 
@@ -1232,33 +1244,41 @@ end
 
 TeleportService.TeleportInitFailed:Connect(function(player, result, errMsg, placeId, options)
     if player ~= LocalPlayer then return end
-    print("[VD v43] ⚠️ TeleportInitFailed:", tostring(result), "|", tostring(errMsg))
+    print("[VD v44] ⚠️ TeleportInitFailed:", tostring(result), "|", tostring(errMsg))
     if not HopInProgress then return end
-    task.spawn(function()
-        ScheduleHopRetry(HopReason)
-    end)
+    task.spawn(function() ScheduleHopRetry(HopReason) end)
 end)
 
 --==================================================
--- DETEKSI SUKSES PINDAH SERVER
+-- ★★★ DETEKSI SUKSES PINDAH SERVER ★★★
 --==================================================
 
 task.spawn(function()
     while true do
         task.wait(1)
         if game.JobId ~= LastJobId then
-            print("[VD v43] ✅ SUKSES pindah server: "
-                .. tostring(LastJobId):sub(1, 8) .. " → "
-                .. tostring(game.JobId):sub(1, 8))
+            local oldId = LastJobId
+            local newId = game.JobId
+            print("[VD v44] ✅ SUKSES pindah server: "
+                .. tostring(oldId):sub(1, 8) .. " → "
+                .. tostring(newId):sub(1, 8))
 
-            LastJobId = game.JobId
+            LastJobId = newId
+
+            -- ★★★ CATAT server baru ke VisitedJobs
+            VisitedJobs[newId] = os.time()
+            table.insert(VisitedList, newId)
+            CleanVisitedMemory()
+
+            print("[VD v44] 📝 VisitedJobs: " .. #VisitedList .. " server tercatat")
+
             HopInProgress = false
             HopRetryCount = 0
             TriedServers = {}
 
             task.wait(3)
             local myCount = #Players:GetPlayers()
-            print("[VD v43] 📊 Server baru punya " .. myCount .. " player")
+            print("[VD v44] 📊 Server baru punya " .. myCount .. " player")
         end
     end
 end)
@@ -1269,7 +1289,6 @@ LocalPlayer.CharacterAdded:Connect(function()
     StableZone = nil; LastZoneCheck = nil; ZoneStableStart = 0
     LastRawZone = nil
     WasInMap = false
-    print("[VD] Character respawn")
 end)
 
 --==================================================
@@ -1282,14 +1301,13 @@ task.spawn(function()
 
         local now = os.clock()
 
-        UI.info1.Text = "Players: " .. #Players:GetPlayers()
+        UI.info1.Text = "Players: " .. #Players:GetPlayers() .. " | Visited: " .. #VisitedList
         GetZoneStable()
 
         local rawZone = GetZoneRaw()
 
         if rawZone == "Map" and not WasInMap then
             WasInMap = true
-            print("[VD v43] Masuk MAP")
         end
         LastRawZone = rawZone
         ZoneChangedAt = now
@@ -1317,7 +1335,6 @@ task.spawn(function()
                 LobbyArrivedAt = now
                 notify("VD AUTO HOP",
                     "🏆 ESCAPE SUKSES — hop dalam " .. Config.PostWinDelay .. "s", 3)
-                print("[VD v43] 🏆 Escape sukses → hop")
             end
 
             local sisa = Config.PostWinDelay - (now - LobbyArrivedAt)
@@ -1359,7 +1376,6 @@ task.spawn(function()
             if not KillerNotified then
                 KillerNotified = true
                 notify("VD AUTO HOP", "🔪 KILLER MODE → hop", 4)
-                print("[VD v43] KILLER MODE → HOP")
             end
             UI.status.Text = "Status: KILLER → HOP"
             UI.status.TextColor3 = Color3.fromRGB(255, 100, 100)
@@ -1385,7 +1401,6 @@ task.spawn(function()
                 if not EscNotified then
                     EscNotified = true
                     notify("VD AUTO ESCAPE", "✅ ESCAPE BERHASIL! Hop...", 3)
-                    print("[VD v43] ESCAPE DONE")
                 end
                 UI.status.Text = "Status: ESCAPED"
                 UI.status.TextColor3 = Color3.fromRGB(80, 255, 120)
@@ -1399,10 +1414,10 @@ task.spawn(function()
 end)
 
 print("═══════════════════════════════════════════")
-print("[VD v43] LOADED — HOP SERVER PALING SEPI")
-print("[VD] ★ Prioritas: server dengan playing TERKECIL")
-print("[VD] ★ Server KOSONG (0p) = paling prioritas")
-print("[VD] ★ Ga ada batas max player")
-print("[VD] ★ Retry unlimited sampai dapat")
+print("[VD v44] LOADED — HOP KE SERVER BARU")
+print("[VD] ★ Prioritas: server yang BELUM pernah dikunjungi")
+print("[VD] ★ Random dari top 5 server tersepi (biar variasi)")
+print("[VD] ★ Ingat " .. Config.VisitedMemorySize .. " server terakhir")
+print("[VD] ★ Min interval hop: " .. Config.MinHopInterval .. "s")
 print("[VD] ★ Auto-reconnect + Anti-AFK aktif")
 print("═══════════════════════════════════════════")
