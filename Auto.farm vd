@@ -1,5 +1,5 @@
 --==================================================
--- VD AUTO FARM v43 — HOP SERVER PALING SEPI
+-- VD AUTO FARM v43 — HOP SERVER PALING SEPI + AUTO RECONNECT
 -- Executor: Delta
 --==================================================
 
@@ -15,6 +15,155 @@ local TweenService      = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+--==================================================
+-- ★★★ AUTO RECONNECT (BARU) ★★★
+--==================================================
+
+local AutoReconnect = {
+    Enabled         = true,
+    MaxAttempts     = 20,
+    AttemptDelay    = 3,
+    CheckInterval   = 1,
+    Attempts        = 0,
+}
+
+local function GetCoreGui()
+    -- Coba gethui dulu (Delta)
+    if type(gethui) == "function" then
+        local ok, hui = pcall(gethui)
+        if ok and hui then return hui end
+    end
+    -- Fallback CoreGui
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then return cg end
+    return nil
+end
+
+local function FindReconnectButton()
+    local roots = {}
+    local cg = GetCoreGui()
+    if cg then table.insert(roots, cg) end
+    pcall(function() table.insert(roots, game:GetService("CoreGui")) end)
+
+    for _, root in ipairs(roots) do
+        if not root then continue end
+
+        -- Cek path spesifik dulu
+        local promptGui = root:FindFirstChild("RobloxPromptGui")
+        if promptGui then
+            local overlay = promptGui:FindFirstChild("promptOverlay")
+            if overlay then
+                for _, obj in ipairs(overlay:GetDescendants()) do
+                    if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                        local name = obj.Name:lower()
+                        local text = (obj.Text or ""):lower()
+                        if name:find("reconnect") or text:find("reconnect")
+                           or name:find("tryagain") or text:find("try again")
+                        then
+                            return obj
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Fallback scan semua
+        for _, obj in ipairs(root:GetDescendants()) do
+            if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                local name = obj.Name:lower()
+                local text = (obj.Text or ""):lower()
+                if name:find("reconnect") or text:find("reconnect")
+                   or name:find("tryagain") or text:find("try again")
+                then
+                    return obj
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function TryClickReconnect(btn)
+    if not btn then return false end
+
+    -- firesignal
+    if type(firesignal) == "function" then
+        pcall(function() firesignal(btn.MouseButton1Click) end)
+        pcall(function() firesignal(btn.MouseButton1Down) end)
+        pcall(function() firesignal(btn.Activated) end)
+    end
+
+    -- getconnections
+    if type(getconnections) == "function" then
+        pcall(function()
+            for _, conn in ipairs(getconnections(btn.MouseButton1Click)) do
+                if conn.Function then pcall(conn.Function) end
+            end
+            for _, conn in ipairs(getconnections(btn.MouseButton1Down)) do
+                if conn.Function then pcall(conn.Function) end
+            end
+            for _, conn in ipairs(getconnections(btn.Activated)) do
+                if conn.Function then pcall(conn.Function) end
+            end
+        end)
+    end
+
+    -- Direct call
+    pcall(function() btn:Activate() end)
+
+    return true
+end
+
+local function TryTeleportReconnect()
+    -- Fallback: pakai TeleportService untuk rejoin
+    pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+end
+
+-- Monitoring thread
+task.spawn(function()
+    while AutoReconnect.Enabled do
+        task.wait(AutoReconnect.CheckInterval)
+
+        if AutoReconnect.Attempts >= AutoReconnect.MaxAttempts then
+            print("[VD Reconnect] ❌ Max attempt (" .. AutoReconnect.MaxAttempts .. ") reached")
+            AutoReconnect.Enabled = false
+            break
+        end
+
+        local btn = FindReconnectButton()
+        if btn and btn.Visible then
+            AutoReconnect.Attempts = AutoReconnect.Attempts + 1
+            print("[VD Reconnect] 🔄 Attempt #" .. AutoReconnect.Attempts .. " — clicking Reconnect...")
+
+            local ok = TryClickReconnect(btn)
+            if not ok then
+                print("[VD Reconnect] ⚠️ Button fail, fallback teleport...")
+                TryTeleportReconnect()
+            end
+
+            task.wait(AutoReconnect.AttemptDelay)
+        end
+    end
+end)
+
+-- Reset counter kalau berhasil reconnect (character respawn normal)
+task.spawn(function()
+    while AutoReconnect.Enabled do
+        task.wait(5)
+        -- Kalau script masih jalan & character ada, berarti koneksi OK
+        if LocalPlayer.Character and LocalPlayer.Character.Parent then
+            if AutoReconnect.Attempts > 0 then
+                print("[VD Reconnect] ✅ Reconnect success (reset counter)")
+                AutoReconnect.Attempts = 0
+            end
+        end
+    end
+end)
+
+print("[VD Reconnect] Auto-reconnect AKTIF")
 
 --==================================================
 -- CONFIG
@@ -885,10 +1034,6 @@ end
 --==================================================
 -- ★★★ PICK SERVER — PALING SEPI (TANPA MAX) ★★★
 --==================================================
--- Urutan: playing paling kecil → paling besar
--- Server KOSONG (0p) = prioritas utama
--- Ga ada batasan max player
---==================================================
 
 local function PickServer(servers, excludeIds)
     excludeIds = excludeIds or {}
@@ -897,7 +1042,6 @@ local function PickServer(servers, excludeIds)
         return nil, "no servers", 0
     end
 
-    -- Kumpulkan semua kandidat valid (belum dicoba + masih ada slot)
     local candidates = {}
     for _, s in ipairs(servers) do
         if s.id ~= game.JobId
@@ -912,18 +1056,15 @@ local function PickServer(servers, excludeIds)
         return nil, "semua server udah dicoba", 0
     end
 
-    -- ★ SORT: PALING SEPI DULU (playing terkecil)
     table.sort(candidates, function(a, b)
         if a.playing ~= b.playing then
-            return a.playing < b.playing   -- playing terkecil = paling sepi
+            return a.playing < b.playing
         end
-        -- Kalau sama, prioritas yang slot kosong lebih banyak
         return (a.maxPlayers - a.playing) > (b.maxPlayers - b.playing)
     end)
 
     local pick = candidates[1]
 
-    -- Info mode
     local mode
     if pick.playing == 0 then
         mode = "KOSONG (0p)"
@@ -989,10 +1130,8 @@ HopToServer = function(reason, isRetry)
 
     local servers = GetServers()
 
-    -- Cari target
     local target, mode, count = PickServer(servers, TriedServers)
 
-    -- Kalau semua udah dicoba → reset & cari ulang
     if not target then
         print("[VD v43] ⚠️ " .. tostring(mode) .. " — reset daftar")
         TriedServers = {}
@@ -1222,9 +1361,10 @@ task.spawn(function()
 end)
 
 print("═══════════════════════════════════════════")
-print("[VD v43] LOADED — HOP SERVER PALING SEPI")
+print("[VD v43] LOADED — HOP SERVER PALING SEPI + AUTO RECONNECT")
 print("[VD] ★ Prioritas: server dengan playing TERKECIL")
 print("[VD] ★ Server KOSONG (0p) = paling prioritas")
 print("[VD] ★ Ga ada batas max player")
 print("[VD] ★ Retry unlimited sampai dapat")
+print("[VD] ★ Auto-reconnect kalau disconnect (Error 277)")
 print("═══════════════════════════════════════════")
