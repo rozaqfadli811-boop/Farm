@@ -1,7 +1,6 @@
 --==================================================
 -- VD AUTO FARM v46 — FULL + WEBHOOK + EXP VIA REMOTE
 -- Executor: Delta
--- Fitur: Auto Hop 2 Menit, Anti-AFK Fix, Auto-Reconnect Fix
 --==================================================
 
 local Players           = game:GetService("Players")
@@ -14,6 +13,7 @@ local StarterGui        = game:GetService("StarterGui")
 local CollectionService = game:GetService("CollectionService")
 local TweenService      = game:GetService("TweenService")
 local VirtualUser       = game:GetService("VirtualUser")
+local CoreGui           = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
@@ -30,7 +30,9 @@ local Config = {
     HopRetryMax      = 999,
     HopRetryDelay    = 1.5,
     HopTimeoutCheck  = 8,
-    HopEveryMinutes  = 2,
+
+    -- ★ Auto hop tiap 2 menit
+    AutoHopInterval  = 120,
 
     MatchCheckDelay  = 0.5,
     MapDistThreshold = 3000,
@@ -49,9 +51,9 @@ local Config = {
     LeverWaitTime    = 2,
 
     AntiAFK            = true,
-    AntiAFKInterval    = 45,
+    AntiAFKInterval    = 60,   -- ★ dari logic baru
     AutoReconnect      = true,
-    ReconnectDelay     = 5,
+    ReconnectDelay     = 2,    -- ★ dari logic baru
     MaxReconnectTries  = 10,
 
     WebhookEnabled     = true,
@@ -112,15 +114,16 @@ local HopRetryCount    = 0
 local TriedServers     = {}
 local LastJobId        = game.JobId
 
+-- ★ tracking auto hop 2 menit
+local LastAutoHopAt    = 0
+
+-- ★ state anti-afk & reconnect baru
 local AntiAFKConn      = nil
 local AntiAFKThread    = nil
+local Rejoining        = false
 local ReconnectTries   = 0
-local Reconnecting     = false
 local SavedPlaceId     = game.PlaceId
 local SavedJobId       = game.JobId
-
--- ★ FITUR BARU: Timer hop otomatis
-local LastAutoHop      = os.clock()
 
 --==================================================
 -- WEBHOOK HELPERS
@@ -174,10 +177,34 @@ local function FindTextByKeywords(keywords)
     return nil
 end
 
---==================================================
--- GET EXP
---==================================================
+-- ★★★ DETEKSI COUNTDOWN MATCH MAU MULAI ★★★
+local function IsCountdownActive()
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and obj.Visible and obj.Text ~= "" then
+            local absY = obj.AbsolutePosition.Y
+            if absY < 200 then
+                local text = obj.Text:match("^%s*(.-)%s*$")
+                local mm, ss = text:match("^(%d+):(%d+)$")
+                if mm and ss and tonumber(mm) == 0 then
+                    local total = tonumber(ss)
+                    if total and total >= 1 and total <= 90 then
+                        return true
+                    end
+                end
+                local onlySec = text:match("^(%d+)$")
+                if onlySec then
+                    local total = tonumber(onlySec)
+                    if total and total >= 1 and total <= 90 then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
 
+-- ★★★ GET EXP VIA REMOTE FUNCTION ★★★
 local _cachedXP = nil
 local _lastXPFetch = 0
 
@@ -233,10 +260,6 @@ local function GetSurvivorXP()
     return _cachedXP
 end
 
---==================================================
--- GET STATS
---==================================================
-
 local function GetStats()
     local stats = {
         Username = LocalPlayer.Name,
@@ -265,24 +288,24 @@ local function GetStats()
         local found = FindTextByKeywords({"level", "lvl", "tingkat"})
         if found then stats.Level = cleanNumber(found) end
     end
+
     if stats.Gears == "?" then
         local found = FindTextByKeywords({"gear", "peralatan"})
         if found then stats.Gears = cleanNumber(found) end
     end
+
     if stats.Screws == "?" then
         local found = FindTextByKeywords({"screw", "sekrup", "baut"})
         if found then stats.Screws = cleanNumber(found) end
     end
 
     local xp = GetSurvivorXP()
-    if xp then stats.EXP = cleanNumber(tostring(xp)) end
+    if xp then
+        stats.EXP = cleanNumber(tostring(xp))
+    end
 
     return stats
 end
-
---==================================================
--- SEND TO WEBHOOK
---==================================================
 
 local function SendToWebhook(stats, triggerReason)
     stats = stats or GetStats()
@@ -977,67 +1000,6 @@ local function IsNotDoor(name)
     return false
 end
 
-local function FindExitDoor()
-    local ws = workspace
-    local mapFolder = ws:FindFirstChild("Map")
-    local candidates = {}
-
-    local function scanFolder(root, priority)
-        if not root then return end
-        for _, d in ipairs(root:GetDescendants()) do
-            if IsNotDoor(d.Name) then continue end
-            for _, name in ipairs(DOOR_NAMES) do
-                if d.Name:lower():find(name:lower(), 1, true) then
-                    local hasPart = false
-                    if d:IsA("BasePart") then hasPart = true
-                    elseif d:IsA("Model") then
-                        for _, p in ipairs(d:GetDescendants()) do
-                            if p:IsA("BasePart") then hasPart = true; break end
-                        end
-                    end
-                    if hasPart then
-                        table.insert(candidates, { obj = d, priority = priority, nameLen = #d.Name })
-                    end
-                    break
-                end
-            end
-        end
-    end
-
-    if mapFolder then
-        local gateFolder = mapFolder:FindFirstChild("Gate")
-        if gateFolder then scanFolder(gateFolder, 1) end
-        scanFolder(mapFolder, 2)
-    end
-    scanFolder(ws, 3)
-
-    if #candidates == 0 then return nil end
-
-    table.sort(candidates, function(a, b)
-        if a.priority ~= b.priority then return a.priority < b.priority end
-        return a.nameLen < b.nameLen
-    end)
-
-    return candidates[1].obj
-end
-
-local function GetExitPosition(door)
-    if not door then return nil, nil end
-    if door:IsA("BasePart") then return door.Position, door end
-    if door:IsA("Model") then
-        if door.PrimaryPart then return door.PrimaryPart.Position, door.PrimaryPart end
-        local bestPart, bestSize = nil, 0
-        for _, p in ipairs(door:GetDescendants()) do
-            if p:IsA("BasePart") then
-                local sz = p.Size.X * p.Size.Y * p.Size.Z
-                if sz > bestSize then bestSize = sz; bestPart = p end
-            end
-        end
-        if bestPart then return bestPart.Position, bestPart end
-    end
-    return nil, nil
-end
-
 local function FindFinishLine()
     local mapFolder = workspace:FindFirstChild("Map")
     if not mapFolder then return nil end
@@ -1356,9 +1318,6 @@ HopToServer = function(reason, isRetry)
     HopInProgress = true
     HopReason = reason or "cari server sepi"
 
-    -- ★ Reset timer auto hop tiap kali hop manual/escape
-    LastAutoHop = os.clock()
-
     UI.status.Text = "Status: Hoping..." .. (isRetry and (" [R" .. HopRetryCount .. "]") or "")
     UI.status.TextColor3 = Color3.fromRGB(255, 200, 80)
 
@@ -1378,6 +1337,7 @@ HopToServer = function(reason, isRetry)
     end
 
     LastHop = os.clock()
+    LastAutoHopAt = os.clock()
     ResetEsc()
     MapStableStart = 0; MapConfirmedAt = nil
     StableZone = nil; LastZoneCheck = nil; ZoneStableStart = 0
@@ -1432,7 +1392,7 @@ task.spawn(function()
             HopRetryCount = 0
             TriedServers = {}
             ReconnectTries = 0
-            LastAutoHop = os.clock()
+            LastAutoHopAt = os.clock()
         end
     end
 end)
@@ -1445,19 +1405,14 @@ LocalPlayer.CharacterAdded:Connect(function()
     WasInMap = false
 end)
 
---==================================================
--- ANTI-AFK (FIXED)
---==================================================
+--══════════════════════════════════════════════════════════════
+-- ★★★ ANTI-AFK — LOGIC BARU (dari script referensi) ★★★
+--══════════════════════════════════════════════════════════════
 
 local function DoAntiAFK()
     pcall(function()
         VirtualUser:CaptureController()
-        VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-        task.wait(0.1)
-        VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-    end)
-    pcall(function()
-        VirtualUser:ClickButton2(Vector2.new(0, 0))
+        VirtualUser:ClickButton2(Vector2.new())
     end)
 end
 
@@ -1466,23 +1421,28 @@ function StartAntiAFK()
         pcall(function() AntiAFKConn:Disconnect() end)
         AntiAFKConn = nil
     end
+    if AntiAFKThread then
+        pcall(function()
+            if type(AntiAFKThread) == "thread" then task.cancel(AntiAFKThread) end
+        end)
+        AntiAFKThread = nil
+    end
 
+    -- ★ Idled trigger
     AntiAFKConn = LocalPlayer.Idled:Connect(function()
         if not Config.AntiAFK then return end
         DoAntiAFK()
-        DoAntiAFK()
     end)
 
-    if not AntiAFKThread then
-        AntiAFKThread = task.spawn(function()
-            while true do
-                task.wait(Config.AntiAFKInterval)
-                if Config.AntiAFK then
-                    DoAntiAFK()
-                end
+    -- ★ Backup: gerak kecil tiap 60 detik
+    AntiAFKThread = task.spawn(function()
+        while true do
+            task.wait(Config.AntiAFKInterval)
+            if Config.AntiAFK then
+                DoAntiAFK()
             end
-        end)
-    end
+        end
+    end)
 end
 
 function StopAntiAFK()
@@ -1490,64 +1450,80 @@ function StopAntiAFK()
         pcall(function() AntiAFKConn:Disconnect() end)
         AntiAFKConn = nil
     end
+    if AntiAFKThread then
+        pcall(function()
+            if type(AntiAFKThread) == "thread" then task.cancel(AntiAFKThread) end
+        end)
+        AntiAFKThread = nil
+    end
 end
 
---==================================================
--- AUTO-RECONNECT (FIXED)
---==================================================
+--══════════════════════════════════════════════════════════════
+-- ★★★ AUTO-RECONNECT — LOGIC BARU (dari script referensi) ★★★
+--══════════════════════════════════════════════════════════════
 
-local function AttemptReconnect()
+local function Rejoin()
+    if Rejoining then return end
     if not Config.AutoReconnect then return end
-    if Reconnecting then return end
+    Rejoining = true
 
-    Reconnecting = true
-    ReconnectTries = ReconnectTries + 1
-
-    if ReconnectTries > Config.MaxReconnectTries then
-        Reconnecting = false
-        return
-    end
-
+    notify("VD AUTO RECONNECT", "🔄 Reconnecting...", 3)
     task.wait(Config.ReconnectDelay)
-    local ok = pcall(function()
-        TeleportService:TeleportToPlaceInstance(SavedPlaceId, SavedJobId, LocalPlayer)
-    end)
-    if not ok then
-        pcall(function() TeleportService:Teleport(SavedPlaceId, LocalPlayer) end)
+
+    -- Kalau cuma sendirian di server, kick + teleport fresh
+    if #Players:GetPlayers() <= 1 then
+        pcall(function()
+            LocalPlayer:Kick("Rejoining...")
+        end)
+        task.wait(1)
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        end)
+    else
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+        end)
     end
-    task.wait(2)
-    Reconnecting = false
 end
 
-local function SetupAutoReconnect()
-    Players.PlayerRemoving:Connect(function(plr)
-        if plr == LocalPlayer and Config.AutoReconnect then
-            AttemptReconnect()
-        end
+-- Deteksi prompt error / disconnect
+local function WatchPrompt()
+    local ok, overlay = pcall(function()
+        return CoreGui:WaitForChild("RobloxPromptGui", 10):WaitForChild("promptOverlay", 10)
     end)
-
-    LocalPlayer.AncestryChanged:Connect(function(_, parent)
-        if not parent and Config.AutoReconnect then
-            AttemptReconnect()
-        end
-    end)
-
-    -- ★ FIX: Heartbeat check — deteksi disconnect tanpa event
-    task.spawn(function()
-        while true do
-            task.wait(3)
-            local ok = pcall(function()
-                return LocalPlayer.Parent
-            end)
-            if not ok and Config.AutoReconnect then
-                AttemptReconnect()
+    if ok and overlay then
+        overlay.ChildAdded:Connect(function(child)
+            if child.Name == "ErrorPrompt" and Config.AutoReconnect then
+                Rejoin()
             end
-        end
-    end)
+        end)
+    end
+end
 
-    LocalPlayer.CharacterAdded:Connect(function()
-        ReconnectTries = 0
-        Reconnecting = false
+-- Retry kalau teleport gagal
+TeleportService.TeleportInitFailed:Connect(function()
+    Rejoining = false
+    task.wait(3)
+    if Config.AutoReconnect then Rejoin() end
+end)
+
+-- Reset rejoining saat respawn sukses
+LocalPlayer.CharacterAdded:Connect(function()
+    Rejoining = false
+    ReconnectTries = 0
+end)
+
+-- Start watcher
+task.spawn(WatchPrompt)
+
+-- Script tetap jalan setelah teleport (auto execute)
+local q = queue_on_teleport or (syn and syn.queue_on_teleport)
+if q then
+    LocalPlayer.OnTeleport:Connect(function(state)
+        if state == Enum.TeleportState.Started then
+            -- ★ GANTI LINK DI BAWAH DENGAN LINK SCRIPT LO
+            q([[loadstring(game:HttpGet("GANTI_LINK_SCRIPT_LU"))()]])
+        end
     end)
 end
 
@@ -1566,28 +1542,6 @@ task.spawn(function()
             SendToWebhook(s, "periodic")
         end
         task.wait(Config.WebhookInterval)
-    end
-end)
-
---==================================================
--- AUTO HOP TIMER (SETIAP 2 MENIT)
---==================================================
-
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if not Config.AutoHop then continue end
-        if Hopping then continue end
-        if JustEscaped then continue end
-
-        local interval = (Config.HopEveryMinutes or 2) * 60
-        if (os.clock() - LastAutoHop) >= interval then
-            LastAutoHop = os.clock()
-            notify("VD AUTO HOP", "⏰ Hop otomatis (2 menit)", 3)
-            task.spawn(function()
-                HopToServer("Timer 2 menit")
-            end)
-        end
     end
 end)
 
@@ -1668,6 +1622,19 @@ task.spawn(function()
             continue
         end
 
+        -- ★ AUTO HOP SETIAP 2 MENIT (SKIP KALAU COUNTDOWN AKTIF)
+        if (now - LastAutoHopAt) >= Config.AutoHopInterval then
+            if IsCountdownActive() then
+                UI.info3.Text = "Escape: " .. escInfo .. " | COUNTDOWN AKTIF"
+            else
+                UI.status.Text = "Status: AUTO HOP (2 menit)"
+                UI.status.TextColor3 = Color3.fromRGB(255, 150, 80)
+                LastAutoHopAt = now
+                HopToServer("Auto hop 2 menit")
+                continue
+            end
+        end
+
         if IsPlayerKiller() then
             if not KillerNotified then
                 KillerNotified = true
@@ -1714,13 +1681,13 @@ end)
 --==================================================
 
 if Config.AntiAFK then StartAntiAFK() end
-if Config.AutoReconnect then SetupAutoReconnect() end
+LastAutoHopAt = os.clock()
 
 print("═══════════════════════════════════════════")
 print("[VD v46] LOADED — Full + Webhook + EXP Remote")
 print("[VD] ★ EXP via RemoteFunction GetSurvivorsXP + Attribute fallback")
 print("[VD] ★ Webhook dikirim PAS ESCAPE SUKSES")
 print("[VD] ★ URL diinput dari GUI (auto-save)")
-print("[VD] ★ Anti-AFK FIXED + Auto-Reconnect FIXED")
-print("[VD] ★ Auto Hop setiap 2 menit AKTIF")
+print("[VD] ★ AUTO HOP tiap 2 menit + skip saat countdown match")
+print("[VD] ★ ANTI-AFK + AUTO-RECONNECT (logic baru)")
 print("═══════════════════════════════════════════")
