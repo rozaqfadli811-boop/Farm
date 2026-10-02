@@ -1,5 +1,5 @@
 --==================================================
--- VD AUTO FARM v46 — WINDUI EDITION
+-- VD AUTO FARM v46 — WINDUI EDITION + BACKGROUND
 -- Executor: Delta
 --==================================================
 
@@ -14,13 +14,11 @@ local CollectionService = game:GetService("CollectionService")
 local TweenService      = game:GetService("TweenService")
 local VirtualUser       = game:GetService("VirtualUser")
 local CoreGui           = game:GetService("CoreGui")
+local ContentProvider   = game:GetService("ContentProvider")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
---==================================================
--- WINDUI COLORS (buat notif & custom elements)
---==================================================
 local WIND = {
     bg      = Color3.fromRGB(10, 10, 12),
     panel   = Color3.fromRGB(20, 20, 24),
@@ -31,10 +29,6 @@ local WIND = {
     accent  = Color3.fromRGB(245, 245, 250),
 }
 
---==================================================
--- CONFIG
---==================================================
-
 local Config = {
     AutoHop          = true,
     HopDelay         = 10,
@@ -43,9 +37,7 @@ local Config = {
     HopRetryMax      = 999,
     HopRetryDelay    = 1.5,
     HopTimeoutCheck  = 8,
-
     AutoHopInterval  = 120,
-
     MatchCheckDelay  = 0.5,
     MapDistThreshold = 3000,
     AutoEscape       = true,
@@ -61,22 +53,16 @@ local Config = {
     PostDoorStep     = 30,
     FireLeverFirst   = true,
     LeverWaitTime    = 2,
-
     AntiAFK            = true,
     AntiAFKInterval    = 60,
     AutoReconnect      = true,
     ReconnectDelay     = 2,
     MaxReconnectTries  = 10,
-
     WebhookEnabled     = true,
     WebhookOnEscape    = true,
     WebhookInterval    = 0,
     WebhookAutoSend    = false,
 }
-
---==================================================
--- WEBHOOK URL
---==================================================
 
 local WEBHOOK_URL = ""
 local SAVE_FILE = "vd_webhook_url.txt"
@@ -91,10 +77,6 @@ pcall(function()
         end
     end
 end)
-
---==================================================
--- STATE
---==================================================
 
 local Hopping          = false
 local LastHop          = 0
@@ -126,6 +108,7 @@ local HopRetryCount    = 0
 local TriedServers     = {}
 local LastJobId        = game.JobId
 local LastAutoHopAt    = 0
+local CountdownNotified = false
 
 local AntiAFKConn      = nil
 local AntiAFKThread    = nil
@@ -133,10 +116,6 @@ local Rejoining        = false
 local ReconnectTries   = 0
 local SavedPlaceId     = game.PlaceId
 local SavedJobId       = game.JobId
-
---==================================================
--- WEBHOOK HELPERS
---==================================================
 
 local function wlog(...)
     print("[VD Webhook]", ...)
@@ -186,25 +165,31 @@ local function FindTextByKeywords(keywords)
     return nil
 end
 
--- ★★★ DETEKSI COUNTDOWN MATCH MAU MULAI ★★★
 local function IsCountdownActive()
     for _, obj in ipairs(PlayerGui:GetDescendants()) do
         if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and obj.Visible and obj.Text ~= "" then
             local absY = obj.AbsolutePosition.Y
             if absY < 200 then
                 local text = obj.Text:match("^%s*(.-)%s*$")
+                local nameLow = obj.Name:lower()
+
                 local mm, ss = text:match("^(%d+):(%d+)$")
-                if mm and ss and tonumber(mm) == 0 then
-                    local total = tonumber(ss)
-                    if total and total >= 1 and total <= 90 then
+                if mm and ss then
+                    local total = tonumber(mm) * 60 + tonumber(ss)
+                    if total and total >= 1 and total <= 300 then
                         return true
                     end
                 end
+
                 local onlySec = text:match("^(%d+)$")
                 if onlySec then
                     local total = tonumber(onlySec)
-                    if total and total >= 1 and total <= 90 then
-                        return true
+                    if total and total >= 10 and total <= 90 then
+                        if nameLow:find("timer") or nameLow:find("countdown")
+                        or nameLow:find("round") or nameLow:find("clock")
+                        or nameLow:find("time") or nameLow:find("match") then
+                            return true
+                        end
                     end
                 end
             end
@@ -212,10 +197,6 @@ local function IsCountdownActive()
     end
     return false
 end
-
---==================================================
--- GET EXP
---==================================================
 
 local _cachedXP = nil
 local _lastXPFetch = 0
@@ -317,13 +298,53 @@ local function GetStats()
     return stats
 end
 
---==================================================
--- SEND TO WEBHOOK
---==================================================
-
+-- ★★★ FIX WEBHOOK: URUTAN METODE + CEK STATUS CODE + AUTO SCAN DATA ★★★
 local function SendToWebhook(stats, triggerReason)
     stats = stats or GetStats()
     triggerReason = triggerReason or stats.Trigger or "auto"
+
+    -- ★★★ TAMBAHAN FIX: PENGAMBILAN DATA DARURAT DI DALAM WEBHOOK ★★★
+    if stats.Level == "?" or stats.EXP == "?" or stats.Gears == "?" or stats.Screws == "?" then
+        local function scanStats(keywords)
+            local containers = {PlayerGui}
+            if CoreGui then table.insert(containers, CoreGui) end
+            
+            for _, container in ipairs(containers) do
+                for _, obj in ipairs(container:GetDescendants()) do
+                    if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                        local text = obj.Text
+                        local name = obj.Name:lower()
+                        for _, kw in ipairs(keywords) do
+                            if name:find(kw) or text:lower():find(kw) then
+                                -- Ambil hanya angkanya
+                                local num = text:match("%d+")
+                                if num then return num end
+                            end
+                        end
+                    end
+                end
+            end
+            return nil
+        end
+
+        if stats.Level == "?" then
+            local lvl = scanStats({"level", "lvl", "tingkat"})
+            if lvl then stats.Level = lvl end
+        end
+        if stats.EXP == "?" then
+            local exp = scanStats({"exp", "xp", "experience"})
+            if exp then stats.EXP = exp end
+        end
+        if stats.Gears == "?" then
+            local gear = scanStats({"gear", "peralatan"})
+            if gear then stats.Gears = gear end
+        end
+        if stats.Screws == "?" then
+            local screw = scanStats({"screw", "sekrup", "baut"})
+            if screw then stats.Screws = screw end
+        end
+    end
+    -- ★★★ END TAMBAHAN FIX ★★★
 
     if not WEBHOOK_URL or WEBHOOK_URL == "" or WEBHOOK_URL:find("ISI_URL_LO") then
         wlog("✗ Webhook URL belum diisi!")
@@ -368,41 +389,81 @@ local function SendToWebhook(stats, triggerReason)
 
     local body = HttpService:JSONEncode(payload)
 
+    -- ★ METODE 1: request (paling reliable di Delta) ★
+    if type(request) == "function" then
+        local ok, resp = pcall(function()
+            return request({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body,
+            })
+        end)
+        if ok and resp then
+            if resp.StatusCode and (resp.StatusCode == 200 or resp.StatusCode == 204) then
+                wlog("✓ Webhook sent (request) — " .. tostring(resp.StatusCode))
+                return true
+            elseif resp.Success then
+                wlog("✓ Webhook sent (request) — success")
+                return true
+            end
+        end
+    end
+
+    -- ★ METODE 2: http_request ★
+    if type(http_request) == "function" then
+        local ok, resp = pcall(function()
+            return http_request({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body,
+            })
+        end)
+        if ok and resp then
+            if resp.StatusCode and (resp.StatusCode == 200 or resp.StatusCode == 204) then
+                wlog("✓ Webhook sent (http_request) — " .. tostring(resp.StatusCode))
+                return true
+            elseif resp.Success then
+                wlog("✓ Webhook sent (http_request) — success")
+                return true
+            end
+        end
+    end
+
+    -- ★ METODE 3: syn.request ★
+    if syn and type(syn.request) == "function" then
+        local ok, resp = pcall(function()
+            return syn.request({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body,
+            })
+        end)
+        if ok and resp then
+            if resp.StatusCode and (resp.StatusCode == 200 or resp.StatusCode == 204) then
+                wlog("✓ Webhook sent (syn.request) — " .. tostring(resp.StatusCode))
+                return true
+            elseif resp.Success then
+                wlog("✓ Webhook sent (syn.request) — success")
+                return true
+            end
+        end
+    end
+
+    -- ★ METODE 4: HttpService:PostAsync (last resort) ★
     local ok = pcall(function()
         HttpService:PostAsync(WEBHOOK_URL, body, Enum.HttpContentType.ApplicationJson)
     end)
-    if ok then return true end
-
-    if type(request) == "function" then
-        local ok2 = pcall(function()
-            request({
-                Url = WEBHOOK_URL,
-                Method = "POST",
-                Headers = { ["Content-Type"] = "application/json" },
-                Body = body,
-            })
-        end)
-        if ok2 then return true end
+    if ok then
+        wlog("✓ Webhook sent (HttpService)")
+        return true
     end
 
-    if type(http_request) == "function" then
-        local ok3 = pcall(function()
-            http_request({
-                Url = WEBHOOK_URL,
-                Method = "POST",
-                Headers = { ["Content-Type"] = "application/json" },
-                Body = body,
-            })
-        end)
-        if ok3 then return true end
-    end
-
+    wlog("✗ Semua metode webhook gagal!")
     return false, "all methods failed"
 end
-
---==================================================
--- ★★★ CUSTOM NOTIF — WINDUI STYLE ★★★
---==================================================
 
 local NotifGui, NotifContainer
 
@@ -481,7 +542,6 @@ local function notify(title, text, dur)
         if first then first:Destroy() end
     end
 
-    -- ★ WINDUI-STYLE NOTIF
     local frame = Instance.new("Frame")
     frame.Size = UDim2.fromOffset(300, 60)
     frame.BackgroundColor3 = WIND.panel
@@ -493,7 +553,6 @@ local function notify(title, text, dur)
     stroke.Color = WIND.line
     stroke.Thickness = 1
 
-    -- Accent bar kiri (WindUI style)
     local accentBar = Instance.new("Frame")
     accentBar.Size = UDim2.new(0, 3, 1, -16)
     accentBar.Position = UDim2.fromOffset(0, 8)
@@ -541,10 +600,6 @@ local function notify(title, text, dur)
     end)
 end
 
---==================================================
--- NOCLIP
---==================================================
-
 local function setCharCollide(char, state)
     if not char then return end
     for _, part in ipairs(char:GetDescendants()) do
@@ -590,14 +645,9 @@ local function StopNoclip()
     if char then setCharCollide(char, true) end
 end
 
---==================================================
--- ★★★ WINDUI SETUP — GANTI CreateUI LAMA ★★★
---==================================================
+local UI
+local StartAntiAFK, StopAntiAFK
 
-local UI  -- proxy object dengan info1..info5, status
-local StartAntiAFK, StopAntiAFK  -- forward declaration
-
--- Load WindUI
 local WindUI
 do
     local ok, result = pcall(function()
@@ -614,7 +664,81 @@ end
 if WindUI then
     local Window = WindUI:CreateWindow("🔪 VD Auto Farm v46")
 
-    -- Helper: ambil pagesFrame
+    task.spawn(function()
+        local BG_ASSET = "rbxassetid://111424143640136"
+
+        pcall(function()
+            ContentProvider:PreloadAsync({ BG_ASSET })
+        end)
+
+        local windGui, mainFrame
+        for i = 1, 20 do
+            task.wait(0.15)
+            windGui = PlayerGui:FindFirstChild("WindUI")
+            if windGui then
+                for _, obj in ipairs(windGui:GetDescendants()) do
+                    if obj:IsA("Frame")
+                    and obj.BackgroundColor3 == Color3.fromRGB(10, 10, 12)
+                    and obj.Size.X.Offset >= 400 then
+                        mainFrame = obj
+                        break
+                    end
+                end
+                if mainFrame then break end
+            end
+        end
+
+        if not mainFrame then
+            warn("[VD] Main frame WindUI gak ketemu")
+            return
+        end
+
+        mainFrame.BackgroundTransparency = 1
+        mainFrame.ClipsDescendants = true
+
+        local oldBg = mainFrame:FindFirstChild("VDBackground")
+        if oldBg then oldBg:Destroy() end
+        local oldOv = mainFrame:FindFirstChild("VDOverlay")
+        if oldOv then oldOv:Destroy() end
+
+        local bg = Instance.new("ImageLabel")
+        bg.Name = "VDBackground"
+        bg.Size = UDim2.new(1, 0, 1, 0)
+        bg.Position = UDim2.fromOffset(0, 0)
+        bg.BackgroundTransparency = 1
+        bg.Image = BG_ASSET
+        bg.ImageTransparency = 0
+        bg.ScaleType = Enum.ScaleType.Crop
+        bg.ZIndex = 0
+        bg.Parent = mainFrame
+        Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 12)
+
+        for _, obj in ipairs(mainFrame:GetDescendants()) do
+            if obj:IsA("Frame") or obj:IsA("TextButton") then
+                local bgc = obj.BackgroundColor3
+                if bgc == Color3.fromRGB(20, 20, 24) then
+                    obj.BackgroundTransparency = 0.85
+                elseif bgc == Color3.fromRGB(32, 32, 38) then
+                    obj.BackgroundTransparency = 0.7
+                end
+            end
+        end
+
+        for _, obj in ipairs(mainFrame:GetDescendants()) do
+            if obj ~= bg
+            and not obj:IsA("UICorner")
+            and not obj:IsA("UIGradient")
+            and not obj:IsA("UIStroke")
+            and not obj:IsA("UIPadding")
+            and not obj:IsA("UIListLayout")
+            and obj.ZIndex < 2 then
+                pcall(function() obj.ZIndex = obj.ZIndex + 2 end)
+            end
+        end
+
+        print("[VD] ✅ Background loaded")
+    end)
+
     local function findPagesFrame()
         local windGui = PlayerGui:WaitForChild("WindUI", 5)
         if not windGui then return nil end
@@ -630,7 +754,6 @@ if WindUI then
     task.wait(0.1)
     local pagesFrame = findPagesFrame()
 
-    -- Grab page baru setelah tiap Tab() dibuat
     local grabbedPages = {}
     local function grabNewPage()
         if not pagesFrame then return nil end
@@ -643,9 +766,6 @@ if WindUI then
         return nil
     end
 
-    --==================================================
-    -- TAB MAIN
-    --==================================================
     local MainTab = Window:Tab("Main")
     grabNewPage()
 
@@ -681,15 +801,11 @@ if WindUI then
         end
     end)
 
-    --==================================================
-    -- TAB WEBHOOK
-    --==================================================
     local WebhookTab = Window:Tab("Webhook")
     local webhookPage = grabNewPage()
 
     WebhookTab:Label("🔗 Discord Webhook URL:")
 
-    -- URL TextBox (custom karena WindUI gak ada textbox)
     local urlBox = Instance.new("TextBox")
     urlBox.Size = UDim2.new(1, -6, 0, 32)
     urlBox.BackgroundColor3 = WIND.item
@@ -712,7 +828,6 @@ if WindUI then
     urlPadding.PaddingLeft = UDim.new(0, 8)
     urlPadding.PaddingRight = UDim.new(0, 8)
 
-    -- Status webhook
     local webhookStatus = Instance.new("TextLabel")
     webhookStatus.Size = UDim2.new(1, -6, 0, 18)
     webhookStatus.BackgroundTransparency = 1
@@ -755,9 +870,6 @@ if WindUI then
         Config.AutoHopInterval = v
     end)
 
-    --==================================================
-    -- TAB INFO
-    --==================================================
     local InfoTab = Window:Tab("Info")
     local infoPage = grabNewPage()
 
@@ -798,9 +910,6 @@ if WindUI then
         status = status,
     }
 
-    --==================================================
-    -- TAB ABOUT
-    --==================================================
     local AboutTab = Window:Tab("About")
     grabNewPage()
 
@@ -817,7 +926,6 @@ if WindUI then
     AboutTab:Label("• Webhook Discord")
     AboutTab:Label("• Auto Hop 2 menit + countdown skip")
 else
-    -- Fallback: bikin minimal UI kalau WindUI gagal load
     UI = {
         info1  = { Text = "", TextColor3 = WIND.text },
         info2  = { Text = "", TextColor3 = WIND.text },
@@ -828,10 +936,6 @@ else
         status = { Text = "", TextColor3 = WIND.muted },
     }
 end
-
---==================================================
--- UTIL
---==================================================
 
 local function GetCharPos()
     local char = LocalPlayer.Character
@@ -952,10 +1056,6 @@ local function IsPlayerKiller()
     return false
 end
 
---==================================================
--- CARI FINISH LINE
---==================================================
-
 local function FindFinishLine()
     local mapFolder = workspace:FindFirstChild("Map")
     if not mapFolder then return nil end
@@ -991,10 +1091,6 @@ local function FindFinishLine()
     return nil
 end
 
---==================================================
--- FIRE LEVER
---==================================================
-
 local function FireLeverEvent()
     local rs = ReplicatedStorage
     local remotes = rs:FindFirstChild("Remotes")
@@ -1023,10 +1119,6 @@ local function FireLeverEvent()
 
     return false
 end
-
---==================================================
--- IS ESCAPED
---==================================================
 
 local function IsEscaped()
     local char = LocalPlayer.Character
@@ -1063,10 +1155,6 @@ local function IsEscaped()
 
     return false
 end
-
---==================================================
--- TRY ESCAPE
---==================================================
 
 local function TryEscape()
     if not Config.AutoEscape then return false end
@@ -1185,10 +1273,6 @@ local function ResetEsc()
     StopNoclip()
 end
 
---==================================================
--- GET SERVERS
---==================================================
-
 local function GetServers()
     local url = string.format(
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=%d",
@@ -1234,10 +1318,6 @@ local function PickServer(servers, excludeIds)
 
     return pick, mode, #candidates
 end
-
---==================================================
--- HOP
---==================================================
 
 local HopToServer, ScheduleHopRetry
 
@@ -1294,6 +1374,7 @@ HopToServer = function(reason, isRetry)
 
     LastHop = os.clock()
     LastAutoHopAt = os.clock()
+    CountdownNotified = false
     ResetEsc()
     MapStableStart = 0; MapConfirmedAt = nil
     StableZone = nil; LastZoneCheck = nil; ZoneStableStart = 0
@@ -1327,10 +1408,6 @@ HopToServer = function(reason, isRetry)
     end
 end
 
---==================================================
--- TELEPORT EVENTS
---==================================================
-
 TeleportService.TeleportInitFailed:Connect(function(player, result, errMsg, placeId, options)
     if player ~= LocalPlayer then return end
     if not HopInProgress then return end
@@ -1349,6 +1426,7 @@ task.spawn(function()
             TriedServers = {}
             ReconnectTries = 0
             LastAutoHopAt = os.clock()
+            CountdownNotified = false
         end
     end
 end)
@@ -1361,10 +1439,6 @@ LocalPlayer.CharacterAdded:Connect(function()
     WasInMap = false
 end)
 
---==================================================
--- ANTI-AFK (LOGIC BARU)
---==================================================
-
 local function DoAntiAFK()
     pcall(function()
         VirtualUser:CaptureController()
@@ -1372,7 +1446,7 @@ local function DoAntiAFK()
     end)
 end
 
-function StartAntiAFK()
+StartAntiAFK = function()
     if AntiAFKConn then
         pcall(function() AntiAFKConn:Disconnect() end)
         AntiAFKConn = nil
@@ -1399,7 +1473,7 @@ function StartAntiAFK()
     end)
 end
 
-function StopAntiAFK()
+StopAntiAFK = function()
     if AntiAFKConn then
         pcall(function() AntiAFKConn:Disconnect() end)
         AntiAFKConn = nil
@@ -1411,10 +1485,6 @@ function StopAntiAFK()
         AntiAFKThread = nil
     end
 end
-
---==================================================
--- AUTO-RECONNECT (LOGIC BARU)
---==================================================
 
 local function Rejoin()
     if Rejoining then return end
@@ -1465,7 +1535,6 @@ end)
 
 task.spawn(WatchPrompt)
 
--- Queue on teleport (auto reload script setelah hop)
 local q = queue_on_teleport or (syn and syn.queue_on_teleport)
 if q then
     LocalPlayer.OnTeleport:Connect(function(state)
@@ -1474,10 +1543,6 @@ if q then
         end
     end)
 end
-
---==================================================
--- WEBHOOK PERIODIC
---==================================================
 
 task.spawn(function()
     task.wait(15)
@@ -1492,10 +1557,6 @@ task.spawn(function()
         task.wait(Config.WebhookInterval)
     end
 end)
-
---==================================================
--- MAIN LOOP
---==================================================
 
 task.spawn(function()
     while true do
@@ -1570,17 +1631,22 @@ task.spawn(function()
             continue
         end
 
-        -- AUTO HOP 2 MENIT (SKIP KALAU COUNTDOWN AKTIF)
-        if (now - LastAutoHopAt) >= Config.AutoHopInterval then
-            if IsCountdownActive() then
-                UI.info3.Text = "Escape: " .. escInfo .. " | COUNTDOWN AKTIF"
-            else
-                UI.status.Text = "Status: AUTO HOP (2 menit)"
-                UI.status.TextColor3 = Color3.fromRGB(255, 150, 80)
-                LastAutoHopAt = now
-                HopToServer("Auto hop 2 menit")
-                continue
+        if IsCountdownActive() then
+            LastAutoHopAt = now
+            UI.info3.Text = "Escape: " .. escInfo .. " | COUNTDOWN AKTIF"
+            if not CountdownNotified then
+                CountdownNotified = true
+                notify("VD AUTO HOP", "⏸️ Countdown terdeteksi — hop di-tunda", 3)
             end
+        elseif (now - LastAutoHopAt) >= Config.AutoHopInterval then
+            UI.status.Text = "Status: AUTO HOP (2 menit)"
+            UI.status.TextColor3 = Color3.fromRGB(255, 150, 80)
+            LastAutoHopAt = now
+            CountdownNotified = false
+            HopToServer("Auto hop 2 menit")
+            continue
+        else
+            CountdownNotified = false
         end
 
         if IsPlayerKiller() then
@@ -1624,18 +1690,10 @@ task.spawn(function()
     end
 end)
 
---==================================================
--- INIT
---==================================================
-
-if Config.AntiAFK then StartAntiAFK() end
 LastAutoHopAt = os.clock()
+if Config.AntiAFK then StartAntiAFK() end
 
 print("═══════════════════════════════════════════")
 print("[VD v46] LOADED — WindUI Edition")
-print("[VD] ★ UI: WindUI")
-print("[VD] ★ EXP via GetSurvivorsXP + Attribute fallback")
-print("[VD] ★ Webhook dikirim PAS ESCAPE SUKSES")
-print("[VD] ★ AUTO HOP tiap 2 menit + skip saat countdown match")
-print("[VD] ★ ANTI-AFK + AUTO-RECONNECT (logic baru)")
+print("[VD] ★ Background: rbxassetid://111424143640136")
 print("═══════════════════════════════════════════")
